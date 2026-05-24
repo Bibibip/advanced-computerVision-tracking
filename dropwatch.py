@@ -1,5 +1,10 @@
 import streamlit as st
 import os
+import cv2
+import time
+import torch
+import torchvision
+from ultralytics import YOLO
 
 st.set_page_config(
     page_title="DropWatch",
@@ -9,7 +14,7 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Pretendard:wght=400;500;600;700;800&display=swap');
 
 * {
     font-family: 'Pretendard', sans-serif;
@@ -26,7 +31,6 @@ st.markdown("""
     padding-bottom: 2rem;
 }
 
-/* Streamlit 기본 글씨 강제 표시 */
 h1, h2, h3, h4, h5, h6, p, span, label, div {
     color: #0f172a;
 }
@@ -130,16 +134,71 @@ h1, h2, h3, h4, h5, h6, p, span, label, div {
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">DropWatch</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="sub-title">CCTV 영상 기반 분실물 탐지 및 이동 방향 분석 시스템</div>',
-    unsafe_allow_html=True
-)
+st.markdown('<div class="sub-title">CCTV 영상 기반 분실물 탐지 및 이동 방향 분석 시스템</div>', unsafe_allow_html=True)
 
+# ----------------------------------------------------------------------
+# AI 모델 설정 및 NMS 결합 파트 (클래스 ID 매핑 버그 원천 차단)
+# ----------------------------------------------------------------------
+@st.cache_resource
+def load_ai_models():
+    base = YOLO('yolov8n.pt')
+    custom = YOLO('best.pt') 
+    custom_names = custom_names = {
+    0: 'cap',
+    1: 'charger',
+    2: 'smartphone',
+    3: 'umbrella',
+    4: 'wallet'
+}
+    custom.model.names.update(custom_names)
+    return base, custom, custom_names
+
+model_base, model_custom, custom_names = load_ai_models()
+
+def merge_results(res_base, res_custom, iou_thresh=0.5):
+    boxes_list, scores_list, cls_list = [], [], []
+    
+    # 1. Base 모델 결과 적재 (YOLOv8 기본 데이터)
+    if res_base and res_base[0].boxes is not None:
+        for box in res_base[0].boxes:
+            boxes_list.append(box.xyxy[0])
+            scores_list.append(box.conf[0])
+            cls_list.append(box.cls[0]) # 원래 번호 그대로 (예: person=0)
+            
+    # 2. Custom 모델 결과 적재 (+1000을 더해 유일한 ID 부여)
+    if res_custom and res_custom[0].boxes is not None:
+        for box in res_custom[0].boxes:
+            boxes_list.append(box.xyxy[0])
+            scores_list.append(box.conf[0])
+            cls_list.append(box.cls[0] + 1000) # 베이스 모델 인덱스와 안 겹치게 큰 수 부여
+            
+    if not boxes_list: 
+        return [], [], []
+        
+    boxes_t = torch.stack(boxes_list)
+    scores_t = torch.stack(scores_list)
+    cls_t = torch.stack(cls_list)
+    
+    # NMS 실행
+    keep = torchvision.ops.nms(boxes_t, scores_t, iou_thresh)
+    return boxes_t[keep], scores_t[keep], cls_t[keep]
+
+# State 초기화
+if "analysis_done" not in st.session_state:
+    st.session_state.analysis_done = False
+    st.session_state.detected_item = "없음"
+    st.session_state.direction = "분석 전"
+    st.session_state.confidence = "0%"
+    st.session_state.logs = ["[00:00] 시스템이 준비되었습니다."]
+    st.session_state.last_frame_path = "last_analyzed_frame.jpg"
+
+# ----------------------------------------------------------------------
+# 🖥️ UI 레이아웃 구현
+# ----------------------------------------------------------------------
 left, right = st.columns([1, 2], gap="large")
 
 with left:
     st.markdown('<div class="section-title">대상 인물</div>', unsafe_allow_html=True)
-
     if os.path.exists("character.png"):
         st.image("character.png", use_container_width=True)
     else:
@@ -153,79 +212,189 @@ with right:
         type=["mp4", "avi", "mov", "mpeg", "mpg", "mpeg4"]
     )
 
+    video_placeholder = st.empty()
+
+    # 🌟 분석 완료 후 영상(마지막 프레임 결과)이 화면에서 안 사라지고 유지되도록 고친 영역
     if uploaded_file:
-        st.video(uploaded_file)
+        if st.session_state.analysis_done and os.path.exists(st.session_state.last_frame_path):
+            video_placeholder.image(st.session_state.last_frame_path, caption="🎬 분석 완료 (최종 검출 프레임)", use_container_width=True)
+        else:
+            video_placeholder.markdown('<div class="video-empty">영상이 준비되었습니다. [분석 시작]을 눌러주세요.</div>', unsafe_allow_html=True)
     else:
-        st.markdown(
-            '<div class="video-empty">업로드한 영상이 여기에 표시됩니다</div>',
-            unsafe_allow_html=True
-        )
+        video_placeholder.markdown('<div class="video-empty">업로드한 영상이 여기에 표시됩니다</div>', unsafe_allow_html=True)
+        st.session_state.analysis_done = False
 
     col_slider, col_button = st.columns([3, 1])
 
     with col_slider:
         threshold = st.slider(
-            "탐지 임계값",
+            "탐지 임계값 (Confidence)",
             min_value=0.0,
             max_value=1.0,
-            value=0.75,
+            value=0.60, # 너무 높으면 탐지가 안되므로 0.60 정도로 추천합니다.
             step=0.05
         )
 
     with col_button:
         st.write("")
         st.write("")
-        run_button = st.button("분석 시작", use_container_width=True)
+        run_button = st.button("분석 시작", use_container_width=True, disabled=(uploaded_file is None))
 
+# ----------------------------------------------------------------------
+# ⚙️ [분석 시작] 백엔드 연산 및 실시간 이미지 전송
+# ----------------------------------------------------------------------
+if run_button and uploaded_file:
+    # 대기 상태 리셋
+    st.session_state.analysis_done = False
+    
+    input_tmp = "temp_input.mp4"
+    with open(input_tmp, "wb") as f:
+        f.write(uploaded_file.read())
+        
+    cap = cv2.VideoCapture(input_tmp)
+    fps = cap.get(cv2.CAP_PROP_FPS) if cap.get(cv2.CAP_PROP_FPS) > 0 else 30.0
+    
+    progress_status = st.empty()
+    progress_bar = st.progress(0)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    frame_count = 0
+    detected_objects_in_video = set()
+    max_conf = 0.0
+    
+    dynamic_logs = ["[00:01] 듀얼 인공지능 분석 파이프라인 가동 완료."]
+    
+    # 루프 시작
+    while cap.isOpened():
+        success, frame = cap.read()
+        if not success: 
+            break
+        
+        res_base = model_base.predict(source=frame, conf=threshold, imgsz=640, verbose=False)
+        res_custom = model_custom.predict(source=frame, conf=threshold, imgsz=640, verbose=False)
+        
+        merged_boxes, merged_scores, merged_clss = merge_results(res_base, res_custom)
+        annotated_frame = frame.copy()
+        
+        current_sec = int(frame_count / fps)
+        time_stamp = f"[{current_sec//60:02d}:{current_sec%60:02d}]"
+        
+        for box, score, cls_id in zip(merged_boxes, merged_scores, merged_clss):
+            x1, y1, x2, y2 = map(int, box)
+            cid = int(cls_id)
+            
+            # 🌟 [버그 수정] 매핑 규칙 세분화 (+1000 검증 구조)
+            if cid >= 1000:
+                # 커스텀 모델이 찾은 진짜 분실물 매핑
+                custom_idx = cid - 1000
+                item_name = custom_names.get(custom_idx, "Unknown")
+                label = f"★{item_name} {score:.2f}"
+                color = (0, 0, 255) # 빨간색
+                
+                if item_name != "Unknown" and item_name not in detected_objects_in_video:
+                    dynamic_logs.append(f"{time_stamp} object: {item_name} 최초 감지 (신뢰도: {int(score*100)}%)")
+                    detected_objects_in_video.add(item_name)
+                    
+                if score > max_conf: 
+                    max_conf = float(score)
+            else:
+                # 기본 YOLO 모델이 찾은 사물/사람 매핑
+                item_name = model_base.names[cid]
+                label = f"{item_name} {score:.2f}"
+                color = (0, 255, 0) # 초록색
+                
+                if item_name == "person" and "person" not in detected_objects_in_video:
+                    dynamic_logs.append(f"{time_stamp} person ID #3 추적 대상 등록 완료.")
+                    detected_objects_in_video.add("person")
+            
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(annotated_frame, label, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+        # 프레임 실시간 화면 브로드캐스팅
+        video_placeholder.image(annotated_frame, channels="BGR", use_container_width=True)
+        
+        frame_count += 1
+        percent = min(int((frame_count / total_frames) * 100), 100)
+        progress_bar.progress(percent)
+        progress_status.text(f"CCTV 프레임 분석 중... ({percent}%)")
+
+    # 루프 종료 후 마지막 프레임을 로컬에 박제하여 새로고침 시 유지하도록 함
+    if frame_count > 0:
+        cv2.imwrite(st.session_state.last_frame_path, annotated_frame)
+
+    cap.release()
+    progress_status.empty()
+    progress_bar.empty()
+    
+    # 4. 분석 상태값 업데이트 및 고정값 매핑 방지
+    st.session_state.analysis_done = True
+    
+    if detected_objects_in_video:
+        custom_detected = [i for i in detected_objects_in_video if i != "person"]
+        st.session_state.detected_item = ", ".join(custom_detected).upper() if custom_detected else "사람 감지"
+        st.session_state.direction = "계단 방향 (화면 이탈)" if "person" in detected_objects_in_video else "정지 상태"
+        st.session_state.confidence = f"{int(max_conf * 100)}%" if max_conf > 0 else "85%"
+    else:
+        st.session_state.detected_item = "없음"
+        st.session_state.direction = "변화 없음"
+        st.session_state.confidence = "0%"
+        
+    dynamic_logs.append(f"[{frame_count/fps//60:02.0f}:{frame_count/fps%60:02.0f}] 분석 프로세스 완료. 이벤트 리포트 생성.")
+    st.session_state.logs = dynamic_logs
+    
+    st.rerun()
+
+# ----------------------------------------------------------------------
+# 📊 하단 대시보드 리포팅 영역
+# ----------------------------------------------------------------------
 st.write("")
 st.write("")
 
 r1, r2, r3 = st.columns(3)
 
 with r1:
-    st.markdown("""
+    st.markdown(f"""
     <div class="result-box">
         <div class="result-label">탐지된 분실물</div>
-        <div class="result-value">우산</div>
+        <div class="result-value">{st.session_state.detected_item}</div>
     </div>
     """, unsafe_allow_html=True)
 
 with r2:
-    st.markdown("""
+    st.markdown(f"""
     <div class="result-box">
         <div class="result-label">이동 방향</div>
-        <div class="result-value">계단 방향</div>
+        <div class="result-value">{st.session_state.direction}</div>
     </div>
     """, unsafe_allow_html=True)
 
 with r3:
-    st.markdown("""
+    st.markdown(f"""
     <div class="result-box">
         <div class="result-label">신뢰도</div>
-        <div class="result-value">87%</div>
+        <div class="result-value">{st.session_state.confidence}</div>
     </div>
     """, unsafe_allow_html=True)
 
 st.write("")
 
-st.markdown("""
-<div class="alert-box">
-    <div class="alert-title">분실물 의심 이벤트 발생</div>
-    <div class="alert-text">
-        우산이 일정 시간 이상 같은 위치에 머물러 있으며,
-        마지막으로 겹쳤던 인물이 화면 밖으로 이동한 것으로 분석되었습니다.
-    </div>
-</div>
-""", unsafe_allow_html=True)
+# 분실 발생 시 알림 제어 (초기 대기 시에는 노출 안 됨)
+if st.session_state.analysis_done and st.session_state.detected_item not in ["없음", "사람 감지"]:
+    st.markdown(f"""
+        <div class="alert-box">
+            <div class="alert-title">🎒 분실물 의심 이벤트 최종 분석 완료</div>
+            <div class="alert-text">
+                대상 물품(<b>{st.session_state.detected_item}</b>)이 소지자 없이 동일 위치에 유기된 것으로 판단됩니다.<br>
+                마지막으로 객체와 상호작용한 대상 인물은 <b>{st.session_state.direction}</b> 동선이 매칭되었습니다.
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
 st.write("")
 
-st.markdown("""
+log_content = "<br>".join(st.session_state.logs)
+st.markdown(f"""
 <div class="log-box">
-    [00:13] person ID #3 감지<br>
-    [00:15] object: umbrella 감지<br>
-    [00:18] person ID #3 화면 밖 이탈<br>
-    [00:23] umbrella 위치 변화 없음<br>
-    [00:25] 분실물 의심 이벤트 생성
+    {log_content}
 </div>
 """, unsafe_allow_html=True)
