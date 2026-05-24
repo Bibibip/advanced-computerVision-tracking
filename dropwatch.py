@@ -137,51 +137,64 @@ st.markdown('<div class="main-title">DropWatch</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">CCTV 영상 기반 분실물 탐지 및 이동 방향 분석 시스템</div>', unsafe_allow_html=True)
 
 # ----------------------------------------------------------------------
-# AI 모델 설정 및 NMS 결합 파트 (클래스 ID 매핑 버그 원천 차단)
+# AI 모델 설정 및 NMS 결합 파트
 # ----------------------------------------------------------------------
 @st.cache_resource
 def load_ai_models():
     base = YOLO('yolov8n.pt')
     custom = YOLO('best.pt') 
-    custom_names = custom_names = {
-    0: 'cap',
-    1: 'charger',
-    2: 'smartphone',
-    3: 'umbrella',
-    4: 'wallet'
-}
+    custom_names = {
+        0: 'cap',
+        1: 'charger',
+        2: 'smartphone',
+        3: 'umbrella',
+        4: 'wallet'
+    }
     custom.model.names.update(custom_names)
     return base, custom, custom_names
 
 model_base, model_custom, custom_names = load_ai_models()
 
 def merge_results(res_base, res_custom, iou_thresh=0.5):
-    boxes_list, scores_list, cls_list = [], [], []
+    boxes_list, scores_list, cls_list, id_list = [], [], [], []
     
-    # 1. Base 모델 결과 적재 (YOLOv8 기본 데이터)
     if res_base and res_base[0].boxes is not None:
         for box in res_base[0].boxes:
             boxes_list.append(box.xyxy[0])
             scores_list.append(box.conf[0])
-            cls_list.append(box.cls[0]) # 원래 번호 그대로 (예: person=0)
+            cls_list.append(box.cls[0])
+            track_id = int(box.id[0].item()) if box.id is not None else -1
+            id_list.append(track_id)
             
-    # 2. Custom 모델 결과 적재 (+1000을 더해 유일한 ID 부여)
     if res_custom and res_custom[0].boxes is not None:
         for box in res_custom[0].boxes:
             boxes_list.append(box.xyxy[0])
             scores_list.append(box.conf[0])
-            cls_list.append(box.cls[0] + 1000) # 베이스 모델 인덱스와 안 겹치게 큰 수 부여
+            cls_list.append(box.cls[0] + 1000)
+            track_id = int(box.id[0].item()) if box.id is not None else -1
+            id_list.append(track_id)
             
     if not boxes_list: 
-        return [], [], []
+        return [], [], [], []
         
     boxes_t = torch.stack(boxes_list)
     scores_t = torch.stack(scores_list)
     cls_t = torch.stack(cls_list)
+    ids_t = torch.tensor(id_list)
     
-    # NMS 실행
     keep = torchvision.ops.nms(boxes_t, scores_t, iou_thresh)
-    return boxes_t[keep], scores_t[keep], cls_t[keep]
+    return boxes_t[keep], scores_t[keep], cls_t[keep], ids_t[keep]
+
+# 🌟 5. 화면 구역 기준 방향 판단 함수 반영
+def get_area_direction(x, y, width, height):
+    if x < width / 2 and y < height / 2:
+        return "좌상단_출입문방향"
+    elif x >= width / 2 and y < height / 2:
+        return "우상단_화장실방향"
+    elif x >= width / 2 and y >= height / 2:
+        return "우하단_화장실방향"
+    else:
+        return "좌하단_복도방향"
 
 # State 초기화
 if "analysis_done" not in st.session_state:
@@ -214,7 +227,6 @@ with right:
 
     video_placeholder = st.empty()
 
-    # 🌟 분석 완료 후 영상(마지막 프레임 결과)이 화면에서 안 사라지고 유지되도록 고친 영역
     if uploaded_file:
         if st.session_state.analysis_done and os.path.exists(st.session_state.last_frame_path):
             video_placeholder.image(st.session_state.last_frame_path, caption="🎬 분석 완료 (최종 검출 프레임)", use_container_width=True)
@@ -231,7 +243,7 @@ with right:
             "탐지 임계값 (Confidence)",
             min_value=0.0,
             max_value=1.0,
-            value=0.60, # 너무 높으면 탐지가 안되므로 0.60 정도로 추천합니다.
+            value=0.50,
             step=0.05
         )
 
@@ -241,10 +253,9 @@ with right:
         run_button = st.button("분석 시작", use_container_width=True, disabled=(uploaded_file is None))
 
 # ----------------------------------------------------------------------
-# ⚙️ [분석 시작] 백엔드 연산 및 실시간 이미지 전송
+# ⚙️ [분석 시작] BoT-SORT 트래킹 기반 구역 방향 연산 파트
 # ----------------------------------------------------------------------
 if run_button and uploaded_file:
-    # 대기 상태 리셋
     st.session_state.analysis_done = False
     
     input_tmp = "temp_input.mp4"
@@ -254,6 +265,10 @@ if run_button and uploaded_file:
     cap = cv2.VideoCapture(input_tmp)
     fps = cap.get(cv2.CAP_PROP_FPS) if cap.get(cv2.CAP_PROP_FPS) > 0 else 30.0
     
+    # 🌟 내 파일 해상도 자동 동적 추출 기법 적용 (640 고정 탈피)
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
     progress_status = st.empty()
     progress_bar = st.progress(0)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -262,63 +277,71 @@ if run_button and uploaded_file:
     detected_objects_in_video = set()
     max_conf = 0.0
     
-    dynamic_logs = ["[00:01] 듀얼 인공지능 분석 파이프라인 가동 완료."]
+    # 인물 동선 좌표 추적용 { person_id: [(x, y), (x, y), ...] }
+    person_paths = {}
     
-    # 루프 시작
+    dynamic_logs = [f"[00:01] 해상도 {frame_width}x{frame_height} 탐지완료. BoT-SORT 구역 설정 완료."]
+    
     while cap.isOpened():
         success, frame = cap.read()
         if not success: 
             break
         
-        res_base = model_base.predict(source=frame, conf=threshold, imgsz=640, verbose=False)
-        res_custom = model_custom.predict(source=frame, conf=threshold, imgsz=640, verbose=False)
+        res_base = model_base.track(source=frame, conf=threshold, imgsz=640, verbose=False, persist=True, tracker="botsort.yaml")
+        res_custom = model_custom.track(source=frame, conf=threshold, imgsz=640, verbose=False, persist=True, tracker="botsort.yaml")
         
-        merged_boxes, merged_scores, merged_clss = merge_results(res_base, res_custom)
+        merged_boxes, merged_scores, merged_clss, merged_ids = merge_results(res_base, res_custom)
         annotated_frame = frame.copy()
         
         current_sec = int(frame_count / fps)
         time_stamp = f"[{current_sec//60:02d}:{current_sec%60:02d}]"
         
-        for box, score, cls_id in zip(merged_boxes, merged_scores, merged_clss):
+        for box, score, cls_id, track_id in zip(merged_boxes, merged_scores, merged_clss, merged_ids):
             x1, y1, x2, y2 = map(int, box)
             cid = int(cls_id)
+            tid = int(track_id)
             
-            # 🌟 [버그 수정] 매핑 규칙 세분화 (+1000 검증 구조)
+            # 🌟 4번 로직 구현: 중심좌표 계산
+            cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+            
             if cid >= 1000:
-                # 커스텀 모델이 찾은 진짜 분실물 매핑
                 custom_idx = cid - 1000
                 item_name = custom_names.get(custom_idx, "Unknown")
-                label = f"★{item_name} {score:.2f}"
-                color = (0, 0, 255) # 빨간색
+                label = f"★{item_name} ID:{tid}" if tid != -1 else f"★{item_name}"
+                color = (0, 0, 255)
                 
                 if item_name != "Unknown" and item_name not in detected_objects_in_video:
-                    dynamic_logs.append(f"{time_stamp} object: {item_name} 최초 감지 (신뢰도: {int(score*100)}%)")
+                    dynamic_logs.append(f"{time_stamp} 사물: {item_name} 감지 (신뢰도: {int(score*100)}%)")
                     detected_objects_in_video.add(item_name)
-                    
                 if score > max_conf: 
                     max_conf = float(score)
             else:
-                # 기본 YOLO 모델이 찾은 사물/사람 매핑
                 item_name = model_base.names[cid]
-                label = f"{item_name} {score:.2f}"
-                color = (0, 255, 0) # 초록색
+                label = f"{item_name} ID:{tid}" if tid != -1 else item_name
+                color = (0, 255, 0)
                 
-                if item_name == "person" and "person" not in detected_objects_in_video:
-                    dynamic_logs.append(f"{time_stamp} person ID #3 추적 대상 등록 완료.")
+                # 사람 추적 데이터 적재
+                if item_name == "person" and tid != -1:
+                    if tid not in person_paths:
+                        person_paths[tid] = []
+                        dynamic_logs.append(f"{time_stamp} 인물 추적 가동: Person ID #{tid} 등록")
+                    person_paths[tid].append((cx, cy))
                     detected_objects_in_video.add("person")
             
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(annotated_frame, label, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
-        # 프레임 실시간 화면 브로드캐스팅
+            if item_name == "person" and tid != -1:
+                for pt in person_paths[tid]:
+                    cv2.circle(annotated_frame, pt, 3, (255, 0, 0), -1)
+            
         video_placeholder.image(annotated_frame, channels="BGR", use_container_width=True)
         
         frame_count += 1
         percent = min(int((frame_count / total_frames) * 100), 100)
         progress_bar.progress(percent)
-        progress_status.text(f"CCTV 프레임 분석 중... ({percent}%)")
+        progress_status.text(f"CCTV 실시간 BoT-SORT 추적 중... ({percent}%)")
 
-    # 루프 종료 후 마지막 프레임을 로컬에 박제하여 새로고침 시 유지하도록 함
     if frame_count > 0:
         cv2.imwrite(st.session_state.last_frame_path, annotated_frame)
 
@@ -326,20 +349,40 @@ if run_button and uploaded_file:
     progress_status.empty()
     progress_bar.empty()
     
-    # 4. 분석 상태값 업데이트 및 고정값 매핑 방지
+    # 🌟 6. track_id별 시작/마지막 구역 기준 실시간 방향 매핑 연산
+    final_direction = "변화 없음"
+    if person_paths:
+        main_person_id = max(person_paths.keys(), key=lambda k: len(person_paths[k]))
+        path = person_paths[main_person_id]
+        
+        if len(path) >= 2:
+            start_x, start_y = path[0]
+            end_x, end_y = path[-1]
+            
+            # 사용자 함수 적용 및 변환
+            start_area = get_area_direction(start_x, start_y, frame_width, frame_height)
+            end_area = get_area_direction(end_x, end_y, frame_width, frame_height)
+            
+            if start_area == end_area:
+                final_direction = f"{start_area} 머무름"
+            else:
+                final_direction = f"{start_area} ➔ {end_area}"
+                
+            dynamic_logs.append(f"[이동 리포트] 인물 #{main_person_id} 동선 분석: {final_direction}")
+    
     st.session_state.analysis_done = True
     
     if detected_objects_in_video:
         custom_detected = [i for i in detected_objects_in_video if i != "person"]
         st.session_state.detected_item = ", ".join(custom_detected).upper() if custom_detected else "사람 감지"
-        st.session_state.direction = "계단 방향 (화면 이탈)" if "person" in detected_objects_in_video else "정지 상태"
+        st.session_state.direction = final_direction if "person" in detected_objects_in_video else "정지 상태"
         st.session_state.confidence = f"{int(max_conf * 100)}%" if max_conf > 0 else "85%"
     else:
         st.session_state.detected_item = "없음"
         st.session_state.direction = "변화 없음"
         st.session_state.confidence = "0%"
         
-    dynamic_logs.append(f"[{frame_count/fps//60:02.0f}:{frame_count/fps%60:02.0f}] 분석 프로세스 완료. 이벤트 리포트 생성.")
+    dynamic_logs.append(f"[{frame_count/fps//60:02.0f}:{frame_count/fps%60:02.0f}] 분석 완료.")
     st.session_state.logs = dynamic_logs
     
     st.rerun()
@@ -363,7 +406,7 @@ with r1:
 with r2:
     st.markdown(f"""
     <div class="result-box">
-        <div class="result-label">이동 방향</div>
+        <div class="result-label">이동 방향 (구역 흐름)</div>
         <div class="result-value">{st.session_state.direction}</div>
     </div>
     """, unsafe_allow_html=True)
@@ -378,14 +421,13 @@ with r3:
 
 st.write("")
 
-# 분실 발생 시 알림 제어 (초기 대기 시에는 노출 안 됨)
 if st.session_state.analysis_done and st.session_state.detected_item not in ["없음", "사람 감지"]:
     st.markdown(f"""
         <div class="alert-box">
             <div class="alert-title">🎒 분실물 의심 이벤트 최종 분석 완료</div>
             <div class="alert-text">
                 대상 물품(<b>{st.session_state.detected_item}</b>)이 소지자 없이 동일 위치에 유기된 것으로 판단됩니다.<br>
-                마지막으로 객체와 상호작용한 대상 인물은 <b>{st.session_state.direction}</b> 동선이 매칭되었습니다.
+                마지막으로 객체와 상호작용한 대상 인물은 <b>{st.session_state.direction}</b> 흐름이 매칭되었습니다.
             </div>
         </div>
     """, unsafe_allow_html=True)
