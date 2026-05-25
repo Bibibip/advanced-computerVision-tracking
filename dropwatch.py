@@ -243,7 +243,7 @@ with right:
             "탐지 임계값 (Confidence)",
             min_value=0.0,
             max_value=1.0,
-            value=0.50,
+            value=0.70,
             step=0.05
         )
 
@@ -424,7 +424,7 @@ st.write("")
 if st.session_state.analysis_done and st.session_state.detected_item not in ["없음", "사람 감지"]:
     st.markdown(f"""
         <div class="alert-box">
-            <div class="alert-title">🎒 분실물 의심 이벤트 최종 분석 완료</div>
+            <div class="alert-title">분실물 의심 최종 분석 완료</div>
             <div class="alert-text">
                 대상 물품(<b>{st.session_state.detected_item}</b>)이 소지자 없이 동일 위치에 유기된 것으로 판단됩니다.<br>
                 마지막으로 객체와 상호작용한 대상 인물은 <b>{st.session_state.direction}</b> 흐름이 매칭되었습니다.
