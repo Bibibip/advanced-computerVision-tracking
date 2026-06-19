@@ -1,17 +1,15 @@
 # inference.py
 import streamlit as st          # 웹 대시보드 UI를 구성하기 위한 라이브러리
 import cv2                      # 영상 처리 및 화면에 박스/글씨를 그리기 위한 OpenCV 라이브러리
-import os                       # 파일 경로 등 운영체제 제어를 위한 라이브러리 (현재 코드에선 안 쓰임)
-import math                     
-import numpy as np              
+import os                       # 파일 경로 등 운영체제 제어를 위한 라이브러리 (현재 코드에선 안 쓰임)        
 from ultralytics import YOLO    # YOLOv8 모델을 불러오고 실행하기 위한 라이브러리
-from utils import merge_results, get_area_direction  # 직접 만드신 후처리 함수들 (utils.py에 있음)
 
-# ★ 수정된 함수: BGR 값을 한글 텍스트가 아닌 웹용 HEX 색상 코드(#RRGGBB)로 변환
-def bgr_to_hex(b, g, r):
-    # numpy float 값을 정수로 변환 후 hex 문자열로 포맷팅 (0~255 보장)
-    r, g, b = max(0, min(255, int(r))), max(0, min(255, int(g))), max(0, min(255, int(b)))
-    return f"#{r:02x}{g:02x}{b:02x}"
+from utils import merge_results, get_area_direction  # 직접 만드신 후처리 함수들 (utils.py에 있음)
+from owner_detector import initialize_item_state, find_overlapping_person, update_owner_state
+from lost_detector import handle_drop_event, check_lost_condition,check_retrieved_condition
+from color_extractor import extract_clothes_color
+from detection_analyzer import analyze_person_direction, generate_report
+
 
 @st.cache_resource
 def load_ai_models():
@@ -145,39 +143,28 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                 if tid != -1:
                     # 상태 변수 초기화 시 2초 검증용 타이머(candidate_owner, overlap_start) 추가
                     if tid not in item_states:
-                        item_states[tid] = {
-                            'owner_id': None, 
-                            'status': 'idle', 
-                            'drop_time': 0.0, 
-                            'drop_pos': (cx, cy),
-                            'candidate_owner': None,
-                            'overlap_start': 0.0
-                        }
+                        item_states[tid] = initialize_item_state()
                     
                     state = item_states[tid]
                     
                     # 50픽셀 마진(margin) 적용하여 넓게 겹침 판별
-                    margin = 50 
-                    overlapping_person = None
-                    for p_tid, (px1, py1, px2, py2) in current_persons.items():
-                        if (px1 - margin) <= cx <= (px2 + margin) and (py1 - margin) <= cy <= (py2 + margin):
-                            overlapping_person = p_tid
-                            break
+                    overlapping_person = find_overlapping_person(
+                        (cx, cy),
+                        current_persons,
+                        margin=50
+                    )
                     
-                    if overlapping_person is not None:
-                        # 2초 이상 지속 겹침(소유) 판별 로직
-                        if state['owner_id'] is None:
-                            if state['candidate_owner'] != overlapping_person:
-                                state['candidate_owner'] = overlapping_person
-                                state['overlap_start'] = current_sec_exact
-                            else:
-                                if (current_sec_exact - state['overlap_start']) >= 2.0:
-                                    state['owner_id'] = overlapping_person
-                                    state['status'] = 'held'
-                                    dynamic_logs.append(f"{time_stamp} [이벤트] 2초 이상 소지 확인. 소유자(#{overlapping_person}) 확정.")
-                        else:
-                            if state['owner_id'] == overlapping_person:
-                                state['status'] = 'held'
+                    owner_confirmed, owner_id = update_owner_state(
+                        state,
+                        overlapping_person,
+                        current_sec_exact
+                    )
+
+                    if owner_confirmed:
+                        dynamic_logs.append(
+                            f"{time_stamp} [이벤트] 2초 이상 소지 확인. "
+                            f"소유자(#{owner_id}) 확정."
+                        )
                     
                     else:
                         # 겹침이 풀렸을 경우
@@ -187,10 +174,17 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                             owner = state['owner_id']
                             
                             if state['status'] == 'held':
-                                state['status'] = 'dropped'
-                                state['drop_time'] = current_sec_exact
-                                state['drop_pos'] = (cx, cy)
-                                dynamic_logs.append(f"{time_stamp} [이벤트] 소유자(#{owner})와 분리 감지. {item_name} 방치 카운트 시작.")
+
+                                handle_drop_event(
+                                    state,
+                                    current_sec_exact,
+                                    (cx, cy)
+                                )
+
+                                dynamic_logs.append(
+                                    f"{time_stamp} [이벤트] "
+                                    f"소유자(#{owner})와 분리 감지."
+                                )
                                 
                                 # ★ 핵심: 떨어지는 즉시 실시간으로 캐릭터 그림을 덧칠해서 화면에 쏴줍니다!
                                 owner_colors = person_colors.get(owner, {"upper": "#cccccc", "lower": "#555555"})
@@ -209,21 +203,38 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                                 """
                                 character_placeholder.markdown(dynamic_svg, unsafe_allow_html=True)
                                 
-                            elif state['status'] == 'dropped':
-                                time_passed = current_sec_exact - state['drop_time']
-                                dist = math.hypot(cx - state['drop_pos'][0], cy - state['drop_pos'][1])
-                                
-                                # 방치 후 분실 판정 기준 시간 4.5초 -> 3.0초로 단축
-                                if time_passed >= 3.0 and dist < 50:
-                                    state['status'] = 'lost'
-                                    
-                                    # 텍스트 대신 HEX 색상 코드를 딕셔너리 형태로 가져와서 UI 세션으로 넘김
-                                    owner_colors = person_colors.get(owner, {"upper": "#cccccc", "lower": "#555555"}) # 기본값(회색계열)
+                            elif state["status"] == "dropped":
+
+                                if check_retrieved_condition(
+                                    state,
+                                    overlapping_person
+                                ):
+
+                                    dynamic_logs.append(
+                                        f"{time_stamp} [회수] "
+                                        f"{item_name} 회수 완료"
+                                    )
+
+                                elif check_lost_condition(
+                                    state,
+                                    current_sec_exact,
+                                    (cx, cy)
+                                ):
+
+                                    owner_colors = person_colors.get(
+                                        owner,
+                                        {
+                                            "upper": "#cccccc",
+                                            "lower": "#555555"
+                                        }
+                                    )
+
                                     st.session_state.lost_owner_colors = owner_colors
-                                    
-                                    msg = f"{time_stamp} 🚨 [최종 판정] {item_name} 분실! (소유자 ID: {owner})"
-                                    if msg not in dynamic_logs:
-                                        dynamic_logs.append(msg)
+
+                                    dynamic_logs.append(
+                                        f"{time_stamp} 🚨 "
+                                        f"[최종 판정] {item_name} 분실!"
+                                    )
                     
             # [사람 처리 로직]
             else:
@@ -239,26 +250,10 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                     # 해당 사람의 리스트에 현재 중앙 좌표(cx, cy) 추가
                     person_paths[tid].append((cx, cy))
                     detected_objects_in_video.add("person")
-                    
-                    # 상/하의 색상 HEX 코드 추출 로직
+
                     if tid not in person_colors:
-                        cy1_c, cy2_c = max(0, y1), min(frame_height, y2)
-                        cx1_c, cx2_c = max(0, x1), min(frame_width, x2)
-                        p_crop = frame[cy1_c:cy2_c, cx1_c:cx2_c]
-                        
-                        if p_crop.size > 0:
-                            h, w, _ = p_crop.shape
-                            upper_half = p_crop[0:h//2, :]   
-                            lower_half = p_crop[h//2:h, :]   
-                            
-                            up_b, up_g, up_r = np.mean(upper_half, axis=(0,1)) if upper_half.size > 0 else (204,204,204)
-                            low_b, low_g, low_r = np.mean(lower_half, axis=(0,1)) if lower_half.size > 0 else (85,85,85)
-                            
-                            # HEX 코드 딕셔너리로 저장
-                            person_colors[tid] = {
-                                "upper": bgr_to_hex(up_b, up_g, up_r),
-                                "lower": bgr_to_hex(low_b, low_g, low_r)
-                            }
+
+                        person_colors[tid] = extract_clothes_color(frame, (x1, y1, x2, y2))
 
             # 영상 프레임 위에 네모 박스와 라벨 텍스트를 그립니다.
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
@@ -297,51 +292,33 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
         st.session_state.cropped_item_path = None
     
     # ================= [최종 이동 방향(동선) 계산 로직] =================
-    final_direction = "변화 없음"
-    
-    if person_paths: # 추적된 사람이 1명이라도 있다면
-        # 가장 점이 많이 찍힌(가장 오래 등장한) 사람의 ID를 찾습니다.
-        main_person_id = max(person_paths.keys(), key=lambda k: len(person_paths[k]))
-        path = person_paths[main_person_id] # 그 사람의 이동 좌표 리스트
-        
-        # 찍힌 좌표가 2개 이상이어야 방향을 알 수 있음
-        if len(path) >= 2:
-            start_x, start_y = path[0]  # 맨 처음 나타난 위치
-            end_x, end_y = path[-1]     # 맨 마지막 사라진 위치
-            
-            # (utils.py) 화면 좌표를 넘겨주면 '좌측', '우측' 등의 글자로 바꿔주는 함수 실행
-            start_area = get_area_direction(start_x, start_y, frame_width, frame_height)
-            end_area = get_area_direction(end_x, end_y, frame_width, frame_height)
-            
-            # 처음과 끝 위치가 같으면 머무름, 다르면 A -> B로 이동했다고 판단
-            if start_area == end_area:
-                final_direction = f"{start_area} 머무름"
-            else:
-                final_direction = f"{start_area} ➔ {end_area}"
-                
-            # 로그에 최종 동선 리포트 추가
-            dynamic_logs.append(f"[이동 리포트] 인물 #{main_person_id} 최종 동선: {final_direction}")
+    final_direction = analyze_person_direction(person_paths, frame_width, frame_height)
     
     # ================= [최종 데이터 UI 연동 로직 (Session State 업데이트)] =================
     st.session_state.analysis_done = True
     
     if detected_objects_in_video:
-        # 'person'을 제외한 순수 분실물 리스트만 뽑아냄
-        custom_detected = [i for i in detected_objects_in_video if i != "person"]
-        
-        # 분실물이 있으면 "SMARTPHONE, WALLET" 형식으로, 분실물은 없고 사람만 있으면 "사람 감지"로 텍스트화
-        st.session_state.detected_item = ", ".join(custom_detected).upper() if custom_detected else "사람 감지"
-        
-        # 사람이 한 번이라도 잡혔으면 계산된 방향을, 아니면 "정지 상태" 출력
-        st.session_state.direction = final_direction if "person" in detected_objects_in_video else "정지 상태"
-        
-        # 가장 높았던 신뢰도 출력
-        st.session_state.confidence = f"{int(max_conf * 100)}%" if max_conf > 0 else "85%"
+
+        detected_item, final_direction, confidence = (
+            generate_report(
+                detected_objects_in_video,
+                final_direction,
+                max_conf
+            )
+        )
+
+        st.session_state.detected_item = detected_item
+        st.session_state.direction = final_direction
+        st.session_state.confidence = confidence
+
     else:
-        # 영상에 아무것도 없었을 경우
+
         st.session_state.detected_item = "없음"
         st.session_state.direction = "변화 없음"
         st.session_state.confidence = "0%"
         
     dynamic_logs.append(f"[{frame_count/fps//60:02.0f}:{frame_count/fps%60:02.0f}] 시스템 분석 완료.")
     st.session_state.logs = dynamic_logs # 완성된 로그 기록들을 세션에 저장하여 웹 화면에 출력시킴
+    dynamic_logs.append(
+    f"{time_stamp} owner={state['owner_id']} overlap={overlapping_person}"
+    )
