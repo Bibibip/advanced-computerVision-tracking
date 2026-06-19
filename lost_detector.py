@@ -52,16 +52,17 @@ def check_lost_condition(
 
 def check_retrieved_condition(
     state,
-    overlapping_person
+    current_person,
+    distance
 ):
-    """
-    떨어진 물건을 다시 주웠는지 판정
-    """
 
     if state["status"] != "dropped":
         return False
 
-    if overlapping_person == state["owner_id"]:
+    if (
+        current_person == state["owner_id"]
+        and distance < 80
+    ):
         state["status"] = "retrieved"
         return True
 

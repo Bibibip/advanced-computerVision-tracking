@@ -5,7 +5,7 @@ import os                       # 파일 경로 등 운영체제 제어를 위�
 from ultralytics import YOLO    # YOLOv8 모델을 불러오고 실행하기 위한 라이브러리
 
 from utils import merge_results, get_area_direction  # 직접 만드신 후처리 함수들 (utils.py에 있음)
-from owner_detector import initialize_item_state, find_overlapping_person, update_owner_state
+from owner_detector import initialize_item_state, find_nearest_person, update_owner_state
 from lost_detector import handle_drop_event, check_lost_condition,check_retrieved_condition
 from color_extractor import extract_clothes_color
 from detection_analyzer import analyze_person_direction, generate_report
@@ -147,80 +147,60 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                     
                     state = item_states[tid]
                     
-                    # 50픽셀 마진(margin) 적용하여 넓게 겹침 판별
-                    overlapping_person = find_overlapping_person(
+                    # overlapping_person = find_overlapping_person(
+                    #     (cx, cy),
+                    #     current_persons,
+                    #     margin=50
+                    # )
+
+                    nearest_person, distance = find_nearest_person(
                         (cx, cy),
-                        current_persons,
-                        margin=50
+                        current_persons
                     )
-                    
+
+                    candidate_person = None
+
+                    if distance < 400:
+                        candidate_person = nearest_person
+
                     owner_confirmed, owner_id = update_owner_state(
                         state,
-                        overlapping_person,
+                        candidate_person,
                         current_sec_exact
                     )
 
                     if owner_confirmed:
                         dynamic_logs.append(
-                            f"{time_stamp} [이벤트] 2초 이상 소지 확인. "
-                            f"소유자(#{owner_id}) 확정."
+                            f"{time_stamp} [이벤트] "
+                            f"가장 가까운 사람(#{owner_id})을 소유자로 등록"
                         )
                     
-                    else:
-                        # 겹침이 풀렸을 경우
-                        state['candidate_owner'] = None 
-                        
-                        if state['owner_id'] is not None:
-                            owner = state['owner_id']
-                            
-                            if state['status'] == 'held':
+                    
+                    if state['owner_id'] is not None:
+                        owner = state['owner_id']
 
-                                handle_drop_event(
-                                    state,
-                                    current_sec_exact,
-                                    (cx, cy)
-                                )
+                        # held 상태
+                        if state["status"] == "held":
 
-                                dynamic_logs.append(
-                                    f"{time_stamp} [이벤트] "
-                                    f"소유자(#{owner})와 분리 감지."
-                                )
-                                
-                                # ★ 핵심: 떨어지는 즉시 실시간으로 캐릭터 그림을 덧칠해서 화면에 쏴줍니다!
-                                owner_colors = person_colors.get(owner, {"upper": "#cccccc", "lower": "#555555"})
-                                st.session_state.lost_owner_colors = owner_colors
-                                
-                                upper_c, lower_c = owner_colors["upper"], owner_colors["lower"]
-                                dynamic_svg = f"""
-                                <div style="display: flex; justify-content: center; align-items: center; background-color:#2b2b2b; border-radius:10px; padding:20px;">
-                                    <svg viewBox="0 0 100 200" style="width: 100%; max-width: 150px;">
-                                        <circle cx="50" cy="30" r="20" fill="#fcdbb6" />
-                                        <path d="M 20 60 C 20 50, 80 50, 80 60 L 85 120 L 15 120 Z" fill="{upper_c}" />
-                                        <path d="M 20 120 L 45 120 L 45 190 L 20 190 Z" fill="{lower_c}" />
-                                        <path d="M 55 120 L 80 120 L 80 190 L 55 190 Z" fill="{lower_c}" />
-                                    </svg>
-                                </div>
-                                """
-                                character_placeholder.markdown(dynamic_svg, unsafe_allow_html=True)
-                                
-                            elif state["status"] == "dropped":
+                            if candidate_person is None:
 
-                                if check_retrieved_condition(
-                                    state,
-                                    overlapping_person
-                                ):
+                                if state["missing_start"] is None:
+                                    state["missing_start"] = current_sec_exact
 
-                                    dynamic_logs.append(
-                                        f"{time_stamp} [회수] "
-                                        f"{item_name} 회수 완료"
+                                elif current_sec_exact - state["missing_start"] >= 2.0:
+
+                                    handle_drop_event(
+                                        state,
+                                        current_sec_exact,
+                                        (cx, cy)
                                     )
 
-                                elif check_lost_condition(
-                                    state,
-                                    current_sec_exact,
-                                    (cx, cy)
-                                ):
+                                    dynamic_logs.append(
+                                        f"{time_stamp} [이벤트] "
+                                        f"소유자(#{owner})와 분리 감지."
+                                    )
 
+                                    # 분실 순간 옷 색상 저장
                                     owner_colors = person_colors.get(
                                         owner,
                                         {
@@ -231,10 +211,49 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
 
                                     st.session_state.lost_owner_colors = owner_colors
 
-                                    dynamic_logs.append(
-                                        f"{time_stamp} 🚨 "
-                                        f"[최종 판정] {item_name} 분실!"
-                                    )
+                                    upper_c = owner_colors["upper"]
+                                    lower_c = owner_colors["lower"]
+                            
+                                    dynamic_svg = f"""
+                                    <div style="display: flex; justify-content: center; align-items: center; background-color:#2b2b2b; border-radius:10px; padding:20px;">
+                                        <svg viewBox="0 0 100 200" style="width: 100%; max-width: 150px;">
+                                            <circle cx="50" cy="30" r="20" fill="#fcdbb6" />
+                                            <path d="M 20 60 C 20 50, 80 50, 80 60 L 85 120 L 15 120 Z" fill="{upper_c}" />
+                                            <path d="M 20 120 L 45 120 L 45 190 L 20 190 Z" fill="{lower_c}" />
+                                            <path d="M 55 120 L 80 120 L 80 190 L 55 190 Z" fill="{lower_c}" />
+                                        </svg>
+                                    </div>
+                                    """
+                                    character_placeholder.markdown(dynamic_svg, unsafe_allow_html=True)
+                                
+                            # 다시 가까워졌으면 타이머 초기화
+                            else:
+                                state["missing_start"] = None
+
+                        # dropped 상태
+                        if state["status"] == "dropped":
+
+                            if check_retrieved_condition(
+                                state,
+                                candidate_person
+                            ):
+
+                                dynamic_logs.append(
+                                    f"{time_stamp} [회수] "
+                                    f"{item_name} 회수 완료"
+                                )
+
+                            elif check_lost_condition(
+                                state,
+                                current_sec_exact,
+                                (cx, cy)
+                            ):
+
+                                dynamic_logs.append(
+                                    f"{time_stamp} 🚨 "
+                                    f"[최종 판정] {item_name} 분실!"
+                                )
+                               
                     
             # [사람 처리 로직]
             else:
@@ -254,6 +273,11 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                     if tid not in person_colors:
 
                         person_colors[tid] = extract_clothes_color(frame, (x1, y1, x2, y2))
+                        print(
+                            "PERSON",
+                            tid,
+                            person_colors[tid]
+                        )
 
             # 영상 프레임 위에 네모 박스와 라벨 텍스트를 그립니다.
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
@@ -320,5 +344,5 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
     dynamic_logs.append(f"[{frame_count/fps//60:02.0f}:{frame_count/fps%60:02.0f}] 시스템 분석 완료.")
     st.session_state.logs = dynamic_logs # 완성된 로그 기록들을 세션에 저장하여 웹 화면에 출력시킴
     dynamic_logs.append(
-    f"{time_stamp} owner={state['owner_id']} overlap={overlapping_person}"
+        f"{time_stamp} owner={state['owner_id']} nearest={nearest_person} dist={distance:.1f}"
     )
