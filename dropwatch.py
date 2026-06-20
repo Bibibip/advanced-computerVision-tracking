@@ -49,7 +49,7 @@ with left:
         lower_c = "#444444" 
         
     svg_character = f"""
-    <div style="display: flex; justify-content: center; align-items: center; background-color:#2b2b2b; border-radius:10px; padding:20px;">
+    <div style="display: flex; justify-content: center; align-items: center; background-color:#e8eef5; border-radius:10px; padding:20px;">
         <svg viewBox="0 0 100 200" style="width: 100%; max-width: 150px;">
             <circle cx="50" cy="30" r="20" fill="#fcdbb6" />
             <path d="M 20 60 C 20 50, 80 50, 80 60 L 85 120 L 15 120 Z" fill="{upper_c}" />

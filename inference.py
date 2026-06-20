@@ -10,7 +10,7 @@ TRACKER_ITEM_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot
 # 분리한 모듈 임포트
 from color_extractor import get_person_colors
 from owner_detector import find_overlapping_person, update_ownership
-from lost_detector import check_lost_status
+from lost_detector import check_lost_status, check_recovered_status
 from object_manager import match_items 
 
 @st.cache_resource
@@ -101,11 +101,7 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                 person_paths[tid].append((cx, cy))
                 detected_objects_in_video.add("person")
                 
-                for pt in person_paths[tid]:
-                    cv2.circle(annotated_frame, pt, 3, (255, 0, 0), -1)
-                
-                if tid not in person_colors:
-                    person_colors[tid] = get_person_colors(frame, x1, y1, x2, y2, frame_width, frame_height)
+                person_colors[tid] = get_person_colors(frame, x1, y1, x2, y2, frame_width, frame_height)
 
         # 2. 사물 탐지
         current_items = []
@@ -117,17 +113,14 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
             if cid >= 1000:
                 custom_idx = cid - 1000
                 item_name = custom_names.get(custom_idx, "Unknown")
+                max_conf = max(max_conf, float(score))
                 
                 if item_name != "Unknown" and item_name not in detected_objects_in_video:
-                    dynamic_logs.append(f"{time_stamp} 사물: {item_name} 감지 (신뢰도: {int(score*100)}%)")
+                    detected_confidence = float(score)
+                    dynamic_logs.append(
+                        f"{time_stamp} 사물: {item_name} 감지 (신뢰도: {int(score*100)}%)"
+                    )
                     detected_objects_in_video.add(item_name)
-                    
-                if score > max_conf: 
-                    max_conf = float(score)
-                    cy1_crop, cy2_crop = max(0, y1), min(frame_height, y2)
-                    cx1_crop, cx2_crop = max(0, x1), min(frame_width, x2)
-                    best_crop = frame[cy1_crop:cy2_crop, cx1_crop:cx2_crop]
-                
                 current_items.append({'name': item_name, 'cx': cx, 'cy': cy, 'box': (x1, y1, x2, y2), 'score': score})
 
         # 3. 사물 ID 매칭
@@ -148,11 +141,18 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
             cv2.putText(annotated_frame, label, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
              # 4-1. 소유자 판별 (거리 기반 및 최초 소지자 즉시 매칭)
-            overlapping_person = find_overlapping_person(cx, cy, current_persons, margin=50)
+            overlapping_person = find_overlapping_person(cx, cy, current_persons, margin=120)
             is_new = state.pop('just_created', False)  # 한 번만 True, 그 이후엔 False        
             just_owned = update_ownership(state, overlapping_person, current_sec_exact, is_new_item=is_new)
+                     
             if just_owned:
-                dynamic_logs.append(f"{time_stamp} 🔍[디버그] {item_name}(ID:{my_id}) 소유자(Person ID:{overlapping_person}) 확정!")
+                state["owner_color"] = person_colors.get(
+                    overlapping_person,
+                    {
+                        "upper": "#cccccc",
+                        "lower": "#555555"
+                    }
+                )
 
             # ★ 추가: "소유자 본인"이 여전히 겹쳐있는지로 분리 여부 판단
             if state['owner_id'] is not None:
@@ -171,11 +171,12 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                 if just_dropped:
                     owner = state['owner_id']
                     owner_colors = person_colors.get(owner, {"upper": "#cccccc", "lower": "#555555"})
+
                     st.session_state.lost_owner_colors = owner_colors
                     
                     upper_c, lower_c = owner_colors["upper"], owner_colors["lower"]
                     dynamic_svg = f"""
-                    <div style="display: flex; justify-content: center; align-items: center; background-color:#2b2b2b; border-radius:10px; padding:20px;">
+                    <div style="display: flex; justify-content: center; align-items: center; background-color:#e8eef5; border-radius:10px; padding:20px;">
                         <svg viewBox="0 0 100 200" style="width: 100%; max-width: 150px;">
                             <circle cx="50" cy="30" r="20" fill="#fcdbb6" />
                             <path d="M 20 60 C 20 50, 80 50, 80 60 L 85 120 L 15 120 Z" fill="{upper_c}" />
@@ -185,12 +186,58 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                     </div>
                     """
                     character_placeholder.markdown(dynamic_svg, unsafe_allow_html=True)
-                    dynamic_logs.append(f"{time_stamp} 🔍[디버그] {item_name} 분리 감지! 캐릭터 색상 변경 및 카운트 시작.")
                     
                 if just_lost:
                     msg = f"{time_stamp} 🚨 [최종 판정] {item_name} 분실! (소유자 ID: {state['owner_id']})"
+                    cy1_crop, cy2_crop = max(0, y1), min(frame_height, y2)
+                    cx1_crop, cx2_crop = max(0, x1), min(frame_width, x2)
+
+                    best_crop = frame[
+                        cy1_crop:cy2_crop,
+                        cx1_crop:cx2_crop
+                    ].copy()
+
                     if msg not in dynamic_logs:
                         dynamic_logs.append(msg)
+            # 회수 판정
+            if effective_overlap is not None:
+
+                just_recovered, is_owner_recovery = (
+                    check_recovered_status(
+                        state,
+                        effective_overlap,
+                        current_sec_exact
+                    )
+                )
+
+                if (
+                    just_recovered
+                    and is_owner_recovery
+                    and not state.get("recovered_logged", False)
+                ):
+                    state["retrieved"] = True
+                    state["recovered_logged"] = True
+
+                    dynamic_logs.append(
+                        f"{time_stamp} ✅ "
+                        f"{item_name} 회수 완료 "
+                        f"(소유자 ID:{state['owner_id']})"
+                    )
+
+                    st.session_state.recovery_message = (
+                        f"✅ 원래 소유자가 "
+                        f"{item_name}을 회수했습니다."
+                    )
+
+                    cv2.putText(
+                        annotated_frame,
+                        "RECOVERED",
+                        (x1, y1 - 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.9,
+                        (0, 255, 0),
+                        3
+                    )
         
         video_placeholder.image(annotated_frame, channels="BGR", use_container_width=True)
         
@@ -234,9 +281,23 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
     
     if detected_objects_in_video:
         custom_detected = [i for i in detected_objects_in_video if i != "person"]
-        st.session_state.detected_item = ", ".join(custom_detected).upper() if custom_detected else "사람 감지"
+        detected_name = (
+            ", ".join(custom_detected).upper()
+            if custom_detected
+            else "사람 감지"
+        )
+
+        recovered = any(
+            state.get("retrieved", False)
+            for state in item_states.values()
+        )
+
+        if recovered:
+            detected_name += " ✅ 회수완료"
+
+        st.session_state.detected_item = detected_name
         st.session_state.direction = final_direction if "person" in detected_objects_in_video else "정지 상태"
-        st.session_state.confidence = f"{int(max_conf * 100)}%" if max_conf > 0 else "85%"
+        st.session_state.confidence = f"{int(detected_confidence * 100)}%" if detected_confidence > 0 else "85%"
     else:
         st.session_state.detected_item = "없음"
         st.session_state.direction = "변화 없음"

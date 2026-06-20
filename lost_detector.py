@@ -23,3 +23,18 @@ def check_lost_status(state, cx, cy, current_sec_exact):
                 just_lost = True
                 
     return just_dropped, just_lost
+
+def check_recovered_status(state, new_overlapping_person, current_sec_exact):
+    """dropped/lost 상태에서 누군가 다시 물건을 집어가면 '회수'로 판정.
+    owner_id는 절대 바꾸지 않고, 최초 소유자 그대로 유지."""
+    just_recovered = False
+    is_owner_recovery = False
+    
+    if state['status'] in ('dropped', 'lost') and new_overlapping_person is not None:
+        is_owner_recovery = (new_overlapping_person == state['owner_id'])
+        state['status'] = 'held'
+        state['recovered_time'] = current_sec_exact
+        # ★ owner_id는 그대로 둠 (최초 소유자 고정)
+        just_recovered = True
+        
+    return just_recovered, is_owner_recovery
