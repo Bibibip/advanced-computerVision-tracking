@@ -4,6 +4,8 @@ import os
 import numpy as np              
 from ultralytics import YOLO
 from utils import merge_results, get_area_direction
+TRACKER_PERSON_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "botsort_person.yaml")
+TRACKER_ITEM_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "botsort_item.yaml")
 
 # 분리한 모듈 임포트
 from color_extractor import get_person_colors
@@ -24,7 +26,13 @@ def load_ai_models():
 
 def run_video_analysis(uploaded_file, threshold, video_placeholder, character_placeholder):
     model_base, model_custom, custom_names = load_ai_models()
-    
+     # ★ 추가: 매 분석 시작 시 트래커 상태 초기화
+    for m in (model_base, model_custom):
+        if hasattr(m, "predictor") and m.predictor is not None:
+            m.predictor.trackers[0].reset()
+        else:
+            m.predictor = None  # 다음 track() 호출 시 새로 생성되게
+
     st.session_state.analysis_done = False
     
     input_tmp = "temp_input.mp4"
@@ -60,8 +68,8 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
         if not success: 
             break
         
-        res_base = model_base.track(source=frame, conf=threshold, imgsz=1024, verbose=False, persist=True, tracker="botsort.yaml")
-        res_custom = model_custom.track(source=frame, conf=threshold, imgsz=1024, verbose=False, persist=True, tracker="botsort.yaml")
+        res_base = model_base.track(source=frame, conf=threshold, imgsz=1024, verbose=False, persist=True, tracker=TRACKER_PERSON_CFG)
+        res_custom = model_custom.track(source=frame, conf=threshold, imgsz=1024, verbose=False, persist=True, tracker=TRACKER_ITEM_CFG)
         
         merged_boxes, merged_scores, merged_clss, merged_ids = merge_results(res_base, res_custom)
         annotated_frame = frame.copy()
@@ -139,16 +147,25 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(annotated_frame, label, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-            # 4-1. 소유자 판별 (거리 기반 및 최초 소지자 즉시 매칭)
-            overlapping_person = find_overlapping_person(cx, cy, current_persons, margin=80)
-            is_new = (state['status'] == 'idle')
+             # 4-1. 소유자 판별 (거리 기반 및 최초 소지자 즉시 매칭)
+            overlapping_person = find_overlapping_person(cx, cy, current_persons, margin=50)
+            is_new = state.pop('just_created', False)  # 한 번만 True, 그 이후엔 False        
             just_owned = update_ownership(state, overlapping_person, current_sec_exact, is_new_item=is_new)
-            
             if just_owned:
                 dynamic_logs.append(f"{time_stamp} 🔍[디버그] {item_name}(ID:{my_id}) 소유자(Person ID:{overlapping_person}) 확정!")
 
+            # ★ 추가: "소유자 본인"이 여전히 겹쳐있는지로 분리 여부 판단
+            if state['owner_id'] is not None:
+                owner_still_overlapping = (
+                    state['owner_id'] in current_persons and
+                    find_overlapping_person(cx, cy, {state['owner_id']: current_persons[state['owner_id']]}, margin=50) is not None
+                )
+                effective_overlap = state['owner_id'] if owner_still_overlapping else None
+            else:
+                effective_overlap = overlapping_person
+
             # 4-2. 분리 및 분실 감별
-            if overlapping_person is None:
+            if effective_overlap is None:
                 just_dropped, just_lost = check_lost_status(state, cx, cy, current_sec_exact)
                 
                 if just_dropped:

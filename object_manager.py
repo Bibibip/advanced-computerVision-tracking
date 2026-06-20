@@ -23,7 +23,8 @@ def match_items(current_items, item_states):
             item_states[new_id] = {
                 'name': item['name'], 'cx': item['cx'], 'cy': item['cy'], 'box': item['box'],
                 'owner_id': None, 'status': 'idle', 'drop_time': 0.0, 'drop_pos': (item['cx'], item['cy']),
-                'candidate_owner': None, 'overlap_start': 0.0
+                'candidate_owner': None, 'overlap_start': 0.0,
+                'just_created': True,
             }
             matched_ids.add(new_id)
     return matched_ids
