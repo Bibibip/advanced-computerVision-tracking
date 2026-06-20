@@ -1,0 +1,11 @@
+# Ultralytics YOLO 🚀, AGPL-3.0 license
+tracker_type: botsort
+track_high_thresh: 0.5
+track_low_thresh: 0.1
+new_track_thresh: 0.6
+track_buffer: 90        # ★ 핵심: 30 -> 90으로 3배 증가 (기억력 대폭 상승)
+match_thresh: 0.85      # ★ 핵심: 매칭 융통성 증가
+gmc_method: sparseOptFlow
+proximity_thresh: 0.5
+appearance_thresh: 0.25
+with_reid: False
