@@ -130,17 +130,17 @@ def merge_results(res_base, res_custom, iou_thresh=0.5):
     
     if res_base and res_base[0].boxes is not None:
         for box in res_base[0].boxes:
-            boxes_list.append(box.xyxy[0])
-            scores_list.append(box.conf[0])
-            cls_list.append(box.cls[0])
+            boxes_list.append(box.xyxy[0].cpu())
+            scores_list.append(box.conf[0].cpu())
+            cls_list.append(box.cls[0].cpu())
             track_id = int(box.id[0].item()) if box.id is not None else -1
             id_list.append(track_id)
             
     if res_custom and res_custom[0].boxes is not None:
         for box in res_custom[0].boxes:
-            boxes_list.append(box.xyxy[0])
-            scores_list.append(box.conf[0])
-            cls_list.append(box.cls[0] + 1000)
+            boxes_list.append(box.xyxy[0].cpu())
+            scores_list.append(box.conf[0].cpu())
+            cls_list.append((box.cls[0] + 1000).cpu())
             track_id = int(box.id[0].item()) if box.id is not None else -1
             id_list.append(track_id)
             
@@ -150,7 +150,7 @@ def merge_results(res_base, res_custom, iou_thresh=0.5):
     boxes_t = torch.stack(boxes_list)
     scores_t = torch.stack(scores_list)
     cls_t = torch.stack(cls_list)
-    ids_t = torch.tensor(id_list)
+    ids_t = torch.tensor(id_list, device=boxes_t.device)
     
     keep = torchvision.ops.nms(boxes_t, scores_t, iou_thresh)
     return boxes_t[keep], scores_t[keep], cls_t[keep], ids_t[keep]
