@@ -41,8 +41,7 @@ streamlit run dropwatch.py
 
 아래 링크에서 모델 파일을 다운로드한 뒤 models 폴더에 저장하세요.
 
-- best.pt : Google Drive 링크
-- best.onnx : Google Drive 링크
+- Google Drive 링크: https://drive.google.com/drive/folders/1BvxVwFtSq8rMn99ahxluaf9L-0411Oql?usp=sharing 
 
 프로젝트 구조
 models/
