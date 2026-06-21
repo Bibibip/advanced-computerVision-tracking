@@ -1,7 +1,7 @@
 import streamlit as st
 import cv2
 import time
-import onnxruntime as ort
+#import onnxruntime as ort
 import os
 import numpy as np              
 from ultralytics import YOLO
@@ -14,7 +14,7 @@ from color_extractor import get_person_colors
 from owner_detector import find_overlapping_person, update_ownership
 from lost_detector import check_lost_status, check_recovered_status
 from object_manager import match_items 
-print("ONNX Providers:", ort.get_available_providers())
+#print("ONNX Providers:", ort.get_available_providers())
 @st.cache_resource
 def load_ai_models():
     base = YOLO('models/yolov8n.pt')
