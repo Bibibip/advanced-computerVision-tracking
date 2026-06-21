@@ -253,7 +253,12 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                         3
                     )
         
-        video_placeholder.image(annotated_frame, channels="BGR", use_container_width=True)
+        if processed_frames % 3 == 0:
+            video_placeholder.image(
+                annotated_frame,
+                channels="BGR",
+                use_container_width=True
+            )
         
         frame_count += 1
         percent = min(int((frame_count / total_frames) * 100), 100)
