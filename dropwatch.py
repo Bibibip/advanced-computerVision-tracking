@@ -28,6 +28,7 @@ if "analysis_done" not in st.session_state:
     st.session_state.last_frame_path = "last_analyzed_frame.jpg"
     st.session_state.cropped_item_path = None  
     st.session_state.lost_owner_colors = None  # ★ 새로 추가됨: 옷 색상 정보 저장용
+    st.session_state.result_video_path = None
 
 # ----------------------------------------------------------------------
 # 🖥️ UI 레이아웃 구현
@@ -86,10 +87,41 @@ with right:
     video_placeholder = st.empty()
 
     if uploaded_file:
-        if st.session_state.analysis_done and os.path.exists(st.session_state.last_frame_path):
-            video_placeholder.image(st.session_state.last_frame_path, caption="🎬 분석 완료 (최종 검출 프레임)", use_container_width=True)
+        # if (
+        #     st.session_state.analysis_done
+        #     and st.session_state.get("result_video_path")
+        #     and os.path.exists(st.session_state.result_video_path)
+        # ):
+        #     with open(st.session_state.result_video_path, "rb") as video_file:
+        #         video_bytes = video_file.read()
+
+        #     video_placeholder.video(video_bytes)
+
+        # elif (
+        #     st.session_state.analysis_done
+        #     and os.path.exists(st.session_state.last_frame_path)
+        # ):
+        #     video_placeholder.image(
+        #         st.session_state.last_frame_path,
+        #         caption="🎬 분석 완료 (최종 검출 프레임)",
+        #         use_container_width=True
+        #     )
+        if (
+            st.session_state.analysis_done
+            and os.path.exists(st.session_state.last_frame_path)
+        ):
+            video_placeholder.image(
+                st.session_state.last_frame_path,
+                caption="🎬 분석 완료 (최종 검출 프레임)",
+                use_container_width=True
+            )
+
         else:
-            video_placeholder.markdown('<div class="video-empty">영상이 준비되었습니다. [분석 시작]을 눌러주세요.</div>', unsafe_allow_html=True)
+            video_placeholder.markdown(
+                '<div class="video-empty">영상이 준비되었습니다. [분석 시작]을 눌러주세요.</div>',
+                unsafe_allow_html=True
+            )
+
     else:
         video_placeholder.markdown('<div class="video-empty">업로드한 영상이 여기에 표시됩니다</div>', unsafe_allow_html=True)
         st.session_state.analysis_done = False

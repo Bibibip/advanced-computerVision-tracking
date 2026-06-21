@@ -47,6 +47,16 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
     
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    output_video = "analysis_result.mp4"
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+    video_writer = cv2.VideoWriter(
+        output_video,
+        fourcc,
+        fps / 2,  # 2프레임 중 1프레임 분석하므로
+        (frame_width, frame_height)
+    )
     
     progress_status = st.empty()
     progress_bar = st.progress(0)
@@ -252,7 +262,8 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                         (0, 255, 0),
                         3
                     )
-        
+
+        video_writer.write(annotated_frame)
         if processed_frames % 3 == 0:
             video_placeholder.image(
                 annotated_frame,
@@ -266,8 +277,16 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
 
     if frame_count > 0:
         cv2.imwrite(st.session_state.last_frame_path, annotated_frame)
-
+    
+   
+    video_writer.release()
     cap.release()
+    st.session_state.result_video_path = output_video
+
+    print(
+        "RESULT VIDEO:",
+        st.session_state.result_video_path
+    )
     elapsed_time = time.time() - start_time
 
     if elapsed_time > 0:
