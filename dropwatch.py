@@ -23,6 +23,7 @@ if "analysis_done" not in st.session_state:
     st.session_state.detected_item = "없음"
     st.session_state.direction = "분석 전"
     st.session_state.confidence = "0%"
+    st.session_state.fps = "0"
     st.session_state.logs = ["[00:00] 시스템이 준비되었습니다."]
     st.session_state.last_frame_path = "last_analyzed_frame.jpg"
     st.session_state.cropped_item_path = None  
@@ -123,7 +124,7 @@ if run_button and uploaded_file:
 st.write("")
 st.write("")
 
-r1, r2, r3 = st.columns(3)
+r1, r2, r3, r4 = st.columns(4)
 
 with r1:
     st.markdown(f"""
@@ -146,6 +147,14 @@ with r3:
     <div class="result-box">
         <div class="result-label">신뢰도</div>
         <div class="result-value">{st.session_state.confidence}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with r4:
+    st.markdown(f"""
+    <div class="result-box">
+        <div class="result-label">FPS</div>
+        <div class="result-value">{st.session_state.fps}</div>
     </div>
     """, unsafe_allow_html=True)
 

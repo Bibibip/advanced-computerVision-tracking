@@ -1,5 +1,7 @@
 import streamlit as st
 import cv2
+import time
+import onnxruntime as ort
 import os
 import numpy as np              
 from ultralytics import YOLO
@@ -12,7 +14,7 @@ from color_extractor import get_person_colors
 from owner_detector import find_overlapping_person, update_ownership
 from lost_detector import check_lost_status, check_recovered_status
 from object_manager import match_items 
-
+print("ONNX Providers:", ort.get_available_providers())
 @st.cache_resource
 def load_ai_models():
     base = YOLO('models/yolov8n.pt')
@@ -25,6 +27,7 @@ def load_ai_models():
     return base, custom, custom_names
 
 def run_video_analysis(uploaded_file, threshold, video_placeholder, character_placeholder):
+    start_time = time.time()
     model_base, model_custom, custom_names = load_ai_models()
      # ★ 추가: 매 분석 시작 시 트래커 상태 초기화
     for m in (model_base, model_custom):
@@ -50,7 +53,9 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
     frame_count = 0
+    processed_frames = 0
     detected_objects_in_video = set()
+    detected_confidence = 0.0
     max_conf = 0.0
     person_paths = {}
     
@@ -67,9 +72,16 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
         success, frame = cap.read()
         if not success: 
             break
+        frame_count += 1   # 전체 프레임 수
+
+        # 2프레임 중 1프레임만 분석
+        if frame_count % 2 != 0:
+            continue
+
+        processed_frames += 1   # 실제 분석한 프레임 수
         
-        res_base = model_base.track(source=frame, conf=threshold, imgsz=1024, verbose=False, persist=True, tracker=TRACKER_PERSON_CFG)
-        res_custom = model_custom.track(source=frame, conf=threshold, imgsz=1024, verbose=False, persist=True, tracker=TRACKER_ITEM_CFG)
+        res_base = model_base.track(source=frame, conf=threshold, imgsz=640, verbose=False, persist=True, tracker=TRACKER_PERSON_CFG)
+        res_custom = model_custom.track(source=frame, conf=threshold, imgsz=640, verbose=False, persist=True, tracker=TRACKER_ITEM_CFG)
         
         merged_boxes, merged_scores, merged_clss, merged_ids = merge_results(res_base, res_custom)
         annotated_frame = frame.copy()
@@ -93,7 +105,7 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                 color = (0, 255, 0)
                 label = f"person ID:{tid}"
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(annotated_frame, label, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                cv2.putText(annotated_frame, label, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 3)
                 
                 if tid not in person_paths:
                     person_paths[tid] = []
@@ -101,7 +113,8 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                 person_paths[tid].append((cx, cy))
                 detected_objects_in_video.add("person")
                 
-                person_colors[tid] = get_person_colors(frame, x1, y1, x2, y2, frame_width, frame_height)
+                if tid not in person_colors:
+                    person_colors[tid] = get_person_colors(frame, x1, y1, x2, y2, frame_width, frame_height)
 
         # 2. 사물 탐지
         current_items = []
@@ -138,7 +151,7 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
             color = (0, 0, 255)
             label = f"★{item_name} ID:{my_id}"
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(annotated_frame, label, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            cv2.putText(annotated_frame, label, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 3)
 
              # 4-1. 소유자 판별 (거리 기반 및 최초 소지자 즉시 매칭)
             overlapping_person = find_overlapping_person(cx, cy, current_persons, margin=120)
@@ -146,8 +159,9 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
             just_owned = update_ownership(state, overlapping_person, current_sec_exact, is_new_item=is_new)
                      
             if just_owned:
+                owner_id = state["owner_id"]
                 state["owner_color"] = person_colors.get(
-                    overlapping_person,
+                    owner_id,
                     {
                         "upper": "#cccccc",
                         "lower": "#555555"
@@ -170,8 +184,8 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                 
                 if just_dropped:
                     owner = state['owner_id']
-                    owner_colors = person_colors.get(owner, {"upper": "#cccccc", "lower": "#555555"})
-
+                    #owner_colors = person_colors.get(owner, {"upper": "#cccccc", "lower": "#555555"})
+                    owner_colors = state["owner_color"]
                     st.session_state.lost_owner_colors = owner_colors
                     
                     upper_c, lower_c = owner_colors["upper"], owner_colors["lower"]
@@ -234,7 +248,7 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                         "RECOVERED",
                         (x1, y1 - 30),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.9,
+                        1.5,
                         (0, 255, 0),
                         3
                     )
@@ -250,6 +264,15 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
         cv2.imwrite(st.session_state.last_frame_path, annotated_frame)
 
     cap.release()
+    elapsed_time = time.time() - start_time
+
+    if elapsed_time > 0:
+        fps_value = processed_frames / elapsed_time
+    else:
+        fps_value = 0
+
+    st.session_state.fps = f"{fps_value:.1f}"
+
     progress_status.empty()
     progress_bar.empty()
     
