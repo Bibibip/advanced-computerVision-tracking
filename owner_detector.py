@@ -26,7 +26,7 @@ def update_ownership(state, overlapping_person, current_sec_exact, is_new_item=F
             state['overlap_start'] = current_sec_exact
                 
         else:
-            if (current_sec_exact - state['overlap_start']) >= 0.5:
+            if (current_sec_exact - state['overlap_start']) >= 0.2:
                 state['owner_id'] = overlapping_person
                 state['status'] = 'held'
                 just_owned = True

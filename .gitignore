@@ -1,3 +1,10 @@
 .venv/
 __pycache__/
 *.pyc
+models/*.pt
+models/*.onnx
+*.pt
+*.mp4
+cropped_item.jpg
+last_analyzed_frame.jpg
+temp_input.mp4

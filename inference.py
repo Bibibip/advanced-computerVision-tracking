@@ -154,7 +154,7 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
             cv2.putText(annotated_frame, label, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 3)
 
              # 4-1. 소유자 판별 (거리 기반 및 최초 소지자 즉시 매칭)
-            overlapping_person = find_overlapping_person(cx, cy, current_persons, margin=120)
+            overlapping_person = find_overlapping_person(cx, cy, current_persons, margin=100)
             is_new = state.pop('just_created', False)  # 한 번만 True, 그 이후엔 False        
             just_owned = update_ownership(state, overlapping_person, current_sec_exact, is_new_item=is_new)
                      
@@ -172,11 +172,12 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
             if state['owner_id'] is not None:
                 owner_still_overlapping = (
                     state['owner_id'] in current_persons and
-                    find_overlapping_person(cx, cy, {state['owner_id']: current_persons[state['owner_id']]}, margin=50) is not None
+                    find_overlapping_person(cx, cy, {state['owner_id']: current_persons[state['owner_id']]}, margin=100) is not None
                 )
-                effective_overlap = state['owner_id'] if owner_still_overlapping else None
+                effective_overlap = overlapping_person
             else:
                 effective_overlap = overlapping_person
+                state.pop('separate_start', None)
 
             # 4-2. 분리 및 분실 감별
             if effective_overlap is None:
@@ -226,7 +227,6 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
 
                 if (
                     just_recovered
-                    and is_owner_recovery
                     and not state.get("recovered_logged", False)
                 ):
                     state["retrieved"] = True
@@ -235,7 +235,7 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                     dynamic_logs.append(
                         f"{time_stamp} ✅ "
                         f"{item_name} 회수 완료 "
-                        f"(소유자 ID:{state['owner_id']})"
+                        f"(회수자 ID:{state['owner_id']})"
                     )
 
                     st.session_state.recovery_message = (
@@ -260,7 +260,6 @@ def run_video_analysis(uploaded_file, threshold, video_placeholder, character_pl
                 use_container_width=True
             )
         
-        frame_count += 1
         percent = min(int((frame_count / total_frames) * 100), 100)
         progress_bar.progress(percent)
         progress_status.text(f"CCTV 실시간 이벤트 분석 추적 중... ({percent}%)")
