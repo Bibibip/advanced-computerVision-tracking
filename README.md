@@ -25,28 +25,41 @@
 #### 설치: pip install -r requirements.txt
 
 ## 3. 상세 설치/실행 방법
-1) 저장소 Clone
+### 1) 저장소 Clone
+```bash
 git clone [<repository_url>](https://github.com/Bibibip/advanced-computerVision-tracking.git) 
 cd advanced-computerVision-tracking
-2) 가상환경 생성
+```
+### 2) 가상환경 생성
+```bash
 python -m venv .venv
-3) 가상환경 활성화 (powershell)
+```
+### 3) 가상환경 활성화 (powershell)
+```bash
 .\.venv\Scripts\Activate.ps1
-4) 패키지 설치
+```
+### 4) 패키지 설치
+```bash
 pip install -r requirements.txt
-5) Streamlit 실행
+```
+### 5) Streamlit 실행
+```bash
 streamlit run dropwatch.py
+```
 
 ### 모델 다운로드
-
 아래 링크에서 모델 파일을 다운로드한 뒤 models 폴더에 저장하세요.
-- Google Drive 링크: https://drive.google.com/drive/folders/1BvxVwFtSq8rMn99ahxluaf9L-0411Oql?usp=sharing 
-###모델 구조
+```md
+- Google Drive 링크: https://drive.google.com/drive/folders/1BvxVwFtSq8rMn99ahxluaf9L-0411Oql?usp=sharing
+```
+### 모델 구조
+```text
 models/
  ├─ best.pt
  ├─ best.onnx
  ├─ yolov8n.pt
  └─ yolov8n.onnx
+```
  * 실제 실행은 FPS가 더 높게 측정된 pt 파일을 사용하고 있습니다.
  
 ## 4. 데이터 파이프라인
@@ -74,5 +87,15 @@ Streamlit 시각화
 ```
 
 ## 5. 팀원별 역할 분담
-이솔희: 데이터 수집 및 라벨링, 데이터 전처리, streamlit UI 구현, BoT-SORT 인물 트래킹 통합 ID 유지 로직 구현, 보고서 작성
-선비: 데이터 수집 및 라벨링, YOLO Baseline 학습, streamlit UI 구현, BoT-SORT 인물 트래킹 통합 ID 유지 로직 구현, 최종 코드 제출
+#### 이솔희
+* 데이터 수집 및 라벨링
+* 데이터 전처리
+* streamlit UI 구현
+* BoT-SORT 인물 트래킹 통합 ID 유지 로직 구현
+* 보고서 작성
+#### 선비
+* 데이터 수집 및 라벨링
+* YOLO Baseline 학습
+* streamlit UI 구현
+* BoT-SORT 인물 트래킹 통합 ID 유지 로직 구현
+* 최종 코드 제출
